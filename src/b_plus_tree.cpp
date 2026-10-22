@@ -1,9 +1,7 @@
 #include "b_plus_tree.h"
 
 #include <algorithm>
-
-// GCC 6.x 需要类外定义 static constexpr 成员，避免链接期 ODR-use 问题
-constexpr int BPlusTree::MAX_KEYS;
+#include <limits>
 
 BPlusTree::Node* BPlusTree::find_leaf(int key) const {
     Node* cur = root_;
@@ -42,7 +40,7 @@ bool BPlusTree::insert(int key, Rid rid) {
     ++size_;
 
     // 先插入后分裂：超过容量才触发
-    if (static_cast<int>(leaf->keys.size()) > MAX_KEYS) {
+    if (static_cast<int>(leaf->keys.size()) > max_keys_) {
         split_leaf(leaf);
     }
     return true;
@@ -78,10 +76,8 @@ bool BPlusTree::erase(int key) {
     leaf->values.erase(leaf->values.begin() + pos);
     --size_;
 
-    // 实验版简化：叶子删空则摘除（不合并、不借位、允许节点欠载）
-    if (leaf->keys.empty()) {
-        remove_leaf_node(leaf);
-    }
+    // 完整下界维护：借位 / 合并 / 根压缩（替换 Day2 的"删空才摘除"简化版）
+    rebalance(leaf);
     return true;
 }
 
@@ -108,54 +104,155 @@ BPlusTree::Node* BPlusTree::prev_leaf(Node* leaf) {
     return nullptr;  // leaf 是整棵树最左叶子
 }
 
-void BPlusTree::remove_leaf_node(Node* leaf) {
-    Node* parent = leaf->parent;
-    if (parent == nullptr) {
-        // 整棵树只有一个空叶子
-        delete leaf;
-        root_ = nullptr;
-        return;
-    }
-
-    // 先维护叶子链表：前驱的 next 指向 leaf 的后继
-    Node* prev = prev_leaf(leaf);
-    if (prev != nullptr) {
-        prev->next = leaf->next;
-    }
-
-    auto it = std::find(parent->children.begin(), parent->children.end(), leaf);
-    const std::size_t idx = static_cast<std::size_t>(it - parent->children.begin());
-
-    parent->children.erase(it);
-
-    // 摘除 children[idx] 后需删除一个分隔键，保持 children 数 = keys 数 + 1：
-    //   idx == 0 时删 keys[0]，idx > 0 时删 keys[idx-1]（推导见实验笔记）
-    if (!parent->keys.empty()) {
-        const std::size_t key_idx = (idx == 0) ? 0 : idx - 1;
-        parent->keys.erase(parent->keys.begin() + key_idx);
-    }
-
-    delete leaf;
-
-    // 级联摘除空内部节点（children 已为 0）：
-    // 不做借位/合并/上提（实验版简化），允许内部节点欠载（可只剩 1 个孩子），
-    // 因此所有叶子仍保持等深，validate_tree 的等深检查恒成立。
-    while (parent->children.empty()) {
-        Node* victim = parent;
-        parent = parent->parent;
+// 删除后维护节点下界（借位 → 合并 → 根压缩），自底向上逐层修复。
+//
+// 分隔键语义：内部节点 keys[i] = children[i+1] 子树的最小 key（删除后允许滞后）。
+// 借位/合并的旋转公式就是按这个语义推导的，见 README 设计决策。
+void BPlusTree::rebalance(Node* n) {
+    while (n != nullptr) {
+        Node* parent = n->parent;
         if (parent == nullptr) {
-            root_ = nullptr;
-            delete victim;
-            break;
+            // ---- 根节点：允许欠载，只处理两类特殊情况 ----
+            if (n->is_leaf) {
+                if (n->keys.empty()) {  // 整棵树删空
+                    delete n;
+                    root_ = nullptr;
+                }
+                return;
+            }
+            if (n->children.size() == 1) {  // 根压缩：唯一孩子顶上，树高减一
+                Node* child = n->children[0];
+                child->parent = nullptr;
+                root_ = child;
+                delete n;
+            }
+            return;  // 根内部节点有 >= 2 个孩子：合法，无需处理
         }
-        auto g_it = std::find(parent->children.begin(), parent->children.end(), victim);
-        const std::size_t g_idx = static_cast<std::size_t>(g_it - parent->children.begin());
-        parent->children.erase(g_it);
-        if (!parent->keys.empty()) {
-            const std::size_t g_key_idx = (g_idx == 0) ? 0 : g_idx - 1;
-            parent->keys.erase(parent->keys.begin() + g_key_idx);
+
+        auto it = std::find(parent->children.begin(), parent->children.end(), n);
+        const std::size_t idx = static_cast<std::size_t>(it - parent->children.begin());
+        Node* left = (idx > 0) ? parent->children[idx - 1] : nullptr;
+        Node* right = (idx + 1 < parent->children.size()) ? parent->children[idx + 1]
+                                                           : nullptr;
+
+        if (n->is_leaf) {
+            if (static_cast<int>(n->keys.size()) >= min_keys_) {
+                return;  // 达标
+            }
+            // 空叶子借位一次仍欠载，直接合并；非空时优先借位
+            if (!n->keys.empty() && left != nullptr && static_cast<int>(left->keys.size()) > min_keys_) {
+                // 借左：左兄弟最大 key 移入本叶最前，父分隔键更新为新的"本叶最小 key"
+                const int lmax = left->keys.back();
+                const Rid lval = left->values.back();
+                left->keys.pop_back();
+                left->values.pop_back();
+                n->keys.insert(n->keys.begin(), lmax);
+                n->values.insert(n->values.begin(), lval);
+                parent->keys[idx - 1] = lmax;
+                return;
+            }
+            if (!n->keys.empty() && right != nullptr && static_cast<int>(right->keys.size()) > min_keys_) {
+                // 借右：右兄弟最小 key 移入本叶末尾，父分隔键更新为右兄弟的新最小
+                const int rmin = right->keys.front();
+                const Rid rval = right->values.front();
+                right->keys.erase(right->keys.begin());
+                right->values.erase(right->values.begin());
+                n->keys.push_back(rmin);
+                n->values.push_back(rval);
+                parent->keys[idx] = right->keys.front();
+                return;
+            }
+            if (left != nullptr) {
+                // 并入左兄弟（含空叶）：内容搬入，维护链表，父节点少一个孩子
+                left->keys.insert(left->keys.end(), n->keys.begin(), n->keys.end());
+                left->values.insert(left->values.end(), n->values.begin(), n->values.end());
+                left->next = n->next;
+                parent->children.erase(parent->children.begin() + static_cast<long>(idx));
+                parent->keys.erase(parent->keys.begin() + static_cast<long>(idx - 1));
+                delete n;
+                n = parent;  // 父节点可能欠载，继续上溯
+                continue;
+            }
+            // 无左兄弟（本叶是最左叶子）→ 并入右兄弟
+            right->keys.insert(right->keys.begin(), n->keys.begin(), n->keys.end());
+            right->values.insert(right->values.begin(), n->values.begin(), n->values.end());
+            if (Node* prev = prev_leaf(n)) {  // 本叶前驱的 next 改为指向 right
+                prev->next = right;
+            }
+            parent->children.erase(parent->children.begin() + static_cast<long>(idx));
+            parent->keys.erase(parent->keys.begin() + static_cast<long>(idx));
+            delete n;
+            n = parent;
+            continue;
         }
-        delete victim;
+
+        // ---- 内部节点（下界 min_children_ 个孩子）----
+        if (static_cast<int>(n->children.size()) >= min_children_) {
+            return;
+        }
+        if (left != nullptr && static_cast<int>(left->children.size()) > min_children_) {
+            // 借左旋转：左兄弟最大键域子树 S 移入本节点最前；
+            // 旧分隔键 x 下落为本节点新 keys[0]；分隔键更新为 S 的最小 key（= 左兄弟旧最大 key）
+            Node* S = left->children.back();
+            const int x = parent->keys[idx - 1];
+            parent->keys[idx - 1] = left->keys.back();
+            left->keys.pop_back();
+            left->children.pop_back();
+            S->parent = n;
+            n->children.insert(n->children.begin(), S);
+            n->keys.insert(n->keys.begin(), x);
+            return;
+        }
+        if (right != nullptr && static_cast<int>(right->children.size()) > min_children_) {
+            // 借右旋转：右兄弟最小键域子树 S 移入本节点末尾；
+            // 旧分隔键 x 下落为本节点新 keys[尾]；分隔键更新为右兄弟的新最小 key
+            Node* S = right->children.front();
+            const int x = parent->keys[idx];
+            const int y = right->keys.front();
+            right->children.erase(right->children.begin());
+            right->keys.erase(right->keys.begin());
+            parent->keys[idx] = y;
+            S->parent = n;
+            n->children.push_back(S);
+            n->keys.push_back(x);
+            return;
+        }
+        if (left != nullptr) {
+            // 并入左兄弟：父分隔键下拉，本节点所有子树整体搬入
+            const int x = parent->keys[idx - 1];
+            left->keys.push_back(x);
+            left->children.push_back(n->children[0]);
+            for (std::size_t i = 0; i < n->keys.size(); ++i) {
+                left->keys.push_back(n->keys[i]);
+                left->children.push_back(n->children[i + 1]);
+            }
+            for (Node* c : n->children) {
+                c->parent = left;
+            }
+            parent->children.erase(parent->children.begin() + static_cast<long>(idx));
+            parent->keys.erase(parent->keys.begin() + static_cast<long>(idx - 1));
+            delete n;
+            n = parent;
+            continue;
+        }
+        // 无左兄弟 → 把右兄弟并入本节点（链表只连叶子，内部节点顺序无关）
+        {
+            const int x = parent->keys[idx];
+            n->keys.push_back(x);
+            n->children.push_back(right->children[0]);
+            for (std::size_t i = 0; i < right->keys.size(); ++i) {
+                n->keys.push_back(right->keys[i]);
+                n->children.push_back(right->children[i + 1]);
+            }
+            for (Node* c : right->children) {
+                c->parent = n;
+            }
+            parent->children.erase(parent->children.begin() + static_cast<long>(idx + 1));
+            parent->keys.erase(parent->keys.begin() + static_cast<long>(idx));
+            delete right;
+            n = parent;
+            continue;
+        }
     }
 }
 
@@ -178,7 +275,7 @@ bool BPlusTree::validate_leaf_chain() const {
     while (!cur->is_leaf) {
         cur = cur->children[0];
     }
-    int prev = -1;  // 本实验 key 从 0 开始
+    int prev = std::numeric_limits<int>::lowest();  // 哨兵：兼容负数 key（勿用 -1 假设 key>=0）
     int visited = 0;
     while (cur != nullptr) {
         for (std::size_t i = 0; i < cur->keys.size(); ++i) {
@@ -231,7 +328,7 @@ bool BPlusTree::validate_tree(std::string& err) const {
     while (!cur->is_leaf) {
         cur = cur->children[0];
     }
-    int prev = -1;  // 本实验 key 从 0 开始
+    int prev = std::numeric_limits<int>::lowest();  // 兼容负数 key
     std::size_t visited = 0;
     while (cur != nullptr) {
         if (cur->keys.empty()) {
@@ -274,6 +371,12 @@ BPlusTree::KeyRange BPlusTree::validate_node(Node* n, int depth, int& leaf_depth
             err = "leaf node is empty";
             return KeyRange{0, 0};
         }
+        // 非根叶子必须满足下界（根叶子允许欠载）
+        if (n->parent != nullptr &&
+            static_cast<int>(n->keys.size()) < min_keys_) {
+            err = "leaf node underfull";
+            return KeyRange{0, 0};
+        }
         if (leaf_depth == -1) {
             leaf_depth = depth;
         } else if (depth != leaf_depth) {
@@ -291,6 +394,16 @@ BPlusTree::KeyRange BPlusTree::validate_node(Node* n, int depth, int& leaf_depth
 
     if (n->children.size() != n->keys.size() + 1) {
         err = "internal children/keys count mismatch";
+        return KeyRange{0, 0};
+    }
+    // 非根内部节点必须满足下界（根内部允许欠载，但不得为 0 个孩子）
+    if (n->parent != nullptr &&
+        static_cast<int>(n->children.size()) < min_children_) {
+        err = "internal node underfull";
+        return KeyRange{0, 0};
+    }
+    if (n->children.empty()) {
+        err = "internal node has no children";
         return KeyRange{0, 0};
     }
     for (Node* c : n->children) {
@@ -391,7 +504,7 @@ void BPlusTree::promote(Node* child, int up_key, Node* right) {
     parent->children.insert(parent->children.begin() + idx + 1, right);
     right->parent = parent;
 
-    if (static_cast<int>(parent->keys.size()) > MAX_KEYS) {
+    if (static_cast<int>(parent->keys.size()) > max_keys_) {
         split_internal(parent);
     }
 }

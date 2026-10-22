@@ -204,6 +204,42 @@ static void bench_range(const std::vector<std::pair<int, int>>& ranges, int repe
     }
 }
 
+// ---- 阶数扫描：不同 MAX_KEYS（order）下 B+ 树的插入 / 点查询 / 树高 ----
+static void bench_fanout(const std::vector<int>& keys, int repeat) {
+    std::printf("\n[Fanout Scan  n=%u keys, 100k point queries]\n",
+                (unsigned)keys.size());
+    std::printf("  %-6s %6s %12s %12s %10s\n", "order", "height", "insert ms",
+                "query ms", "query/s");
+    const int orders[] = {4, 8, 16, 32};
+    const std::vector<int> qs = gen_query_workload(keys, 100000, 7);  // 同一查询集，公平对比
+    for (int o : orders) {
+        double ins_ms = 0.0, qry_ms = 0.0;
+        int h = 0;
+        for (int r = 0; r < repeat; ++r) {
+            BPlusTree tree(o);
+            double t0 = now_sec();
+            for (int k : keys) {
+                tree.insert(k, rid_of(k));
+            }
+            double dins = ms_since(t0);
+            if (r > 0) ins_ms += dins;
+            if (r == repeat - 1) h = tree.height();
+            volatile long long checksum = 0;
+            double t1 = now_sec();
+            for (int q : qs) {
+                auto res = tree.get(q);
+                if (res.has_value()) checksum += res.value().page_no;
+            }
+            double dqry = ms_since(t1);
+            if (r > 0) qry_ms += dqry;
+        }
+        ins_ms /= (repeat - 1);
+        qry_ms /= (repeat - 1);
+        std::printf("  %-6d %6d %12.2f %12.2f %10.0f\n", o, h, ins_ms, qry_ms,
+                    100000.0 / (qry_ms / 1000.0));
+    }
+}
+
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     LARGE_INTEGER freq;
@@ -231,6 +267,8 @@ int main() {
 
     std::vector<std::pair<int, int>> ranges = {{100, 200}, {1000, 2000}, {0, 9999}};
     bench_range(ranges, REPEAT);
+
+    bench_fanout(random10k, REPEAT);
 
     std::printf("\nBenchmark done.\n");
     return 0;

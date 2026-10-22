@@ -11,21 +11,32 @@
 //
 // Day 1：insert / get / 节点分裂
 // Day 2：range_query / erase / validate_tree（全量结构校验）
+// Day 3+：删除完整下界维护（借位 / 合并 / 根压缩）
 //
 // 设计约束（与计划文档一致）：
 //   - Key 为 int，Value 为 Rid
-//   - 每个节点最多 MAX_KEYS 个 key（实验用小度数，4 个即分裂，便于测试覆盖）
+//   - 每个节点最多 max_keys 个 key（默认 4：小度数，插入 5 个即分裂，便于测试覆盖；
+//     构造参数可调，用于不同阶数的性能对比实验）
 //   - 叶子节点按 key 有序，并通过 next 指针串成链表
 //   - 唯一键语义：插入已存在的 key 返回 false；删除不存在的 key 返回 false
-//   - 实验版删除简化：不维护节点下界（允许欠载）、不借位不合并，
-//     仅处理"叶子删空则摘除 + 内部节点只剩一个孩子则上提压缩"；
+//   - 删除维护标准 B+ 树下界：非根节点至少 min_keys 个 key（内部节点至少 min_children 个孩子），
+//     欠载时优先向兄弟借位，借不到则合并，根节点只剩一个孩子时压缩（树高减一）
+//   - 内部节点分隔键语义：keys[i] 是 children[i+1] 子树的最小 key；
 //     删除最小 key 后父节点分隔键允许滞后（仍满足划分有效性，见 validate_tree）
 //   - 不做磁盘 Page / Buffer Pool / 并发 / 恢复
 class BPlusTree {
 public:
-    static constexpr int MAX_KEYS = 4;
+    static constexpr int DEFAULT_MAX_KEYS = 4;
+    // 分裂时（max_keys+1 个 key）左右各至少 floor((max_keys+1)/2) 个，
+    // 因此非根节点下界 = max_keys / 2（内部节点孩子数 = key 数 + 1）
 
-    BPlusTree() : root_(nullptr), size_(0) {}
+    // max_keys 为节点最大 key 数（阶数相关）；默认 4，可调大做性能对比
+    explicit BPlusTree(int max_keys = DEFAULT_MAX_KEYS)
+        : root_(nullptr),
+          size_(0),
+          max_keys_(max_keys),
+          min_keys_(max_keys / 2),
+          min_children_(max_keys / 2 + 1) {}
     ~BPlusTree() { destroy(root_); }
 
     BPlusTree(const BPlusTree&) = delete;
@@ -87,6 +98,9 @@ private:
 
     Node* root_;
     size_t size_;
+    int max_keys_;       // 节点最多 key 数（构造参数，默认 4）
+    int min_keys_;       // 非根节点最少 key 数 = max_keys_ / 2
+    int min_children_;   // 非根内部节点最少孩子数 = min_keys_ + 1
 
     // 从根开始，沿内部节点下探到 key 所在的叶子节点
     Node* find_leaf(int key) const;
@@ -104,9 +118,10 @@ private:
     // 若 child 是根，则新建根节点
     void promote(Node* child, int up_key, Node* right);
 
-    // 叶子被删空后从父链摘除，并维护叶子链表（前驱 next 接到后继）；
-    // 若内部节点因此变空，则级联摘除空节点（不做借位/合并/上提，允许欠载）
-    void remove_leaf_node(Node* leaf);
+    // 删除后从 n 开始向上维护节点下界：
+    //   叶子/内部欠载 → 优先向左右兄弟借位，借不到则与兄弟合并；
+    //   根节点只剩一个孩子或空叶子时压缩（删除根、树高减一或树清空）
+    void rebalance(Node* n);
 
     // 返回 subtree 中最右的叶子（用于找链表前驱）
     static Node* rightmost_leaf(Node* n);

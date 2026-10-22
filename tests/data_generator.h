@@ -30,6 +30,15 @@ inline std::vector<int> gen_random_unique(int n, unsigned seed = 42) {
     return v;
 }
 
+// 生成 [lo, lo+n) 的一个随机排列（不重复）；lo 可为负，覆盖负数 key 路径
+inline std::vector<int> gen_random_unique_range(int n, int lo, unsigned seed = 42) {
+    std::vector<int> v(static_cast<std::size_t>(n));
+    std::iota(v.begin(), v.end(), lo);
+    std::mt19937 rng(seed);
+    std::shuffle(v.begin(), v.end(), rng);
+    return v;
+}
+
 // 生成一个随机查询序列，元素取自 keys（允许重复，模拟真实查询负载）
 inline std::vector<int> gen_query_workload(const std::vector<int>& keys,
                                            std::size_t num_queries,
