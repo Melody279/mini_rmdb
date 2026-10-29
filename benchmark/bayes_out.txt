@@ -1,0 +1,7 @@
+load       grid25_best  bayes15_avg  random15_avg  bayes_found_round
+uniform     0.9000      0.9000      0.8569        4.8
+           (bayes best ms avg=11.15, grid best ms=11.15)
+hot8020     0.9069      0.9069      0.9007        5.2
+           (bayes best ms avg=14.20, grid best ms=14.20)
+rw_80r20w   0.8884      0.8884      0.8833        5.0
+           (bayes best ms avg=26.76, grid best ms=26.76)

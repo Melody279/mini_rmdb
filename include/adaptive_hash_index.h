@@ -37,12 +37,10 @@
 // ====================================================================
 class AdaptiveHashIndex {
 public:
-    // 访问次数达到该阈值后晋升进热点缓存（实验参数）
-    static constexpr int PROMOTE_THRESHOLD = 3;
-
     // 缓存容量上限：构造参数，默认 4096（约 10k 数据前 40% 热点）
-    explicit AdaptiveHashIndex(size_t max_capacity = 4096)
-        : base_index_(), max_capacity_(max_capacity) {}
+    // 晋升阈值：访问次数达到该值后晋升进热点缓存（实验参数，默认 3）
+    explicit AdaptiveHashIndex(size_t max_capacity = 4096, int promote_threshold = 3)
+        : base_index_(), max_capacity_(max_capacity), promote_threshold_(promote_threshold) {}
 
     // 唯一键插入；key 已存在返回 false。插入后失效对应缓存。
     bool insert(int key, Rid rid);
@@ -84,6 +82,7 @@ private:
     std::unordered_map<int, int> access_count_;         // 访问热度计数
     std::list<int> lru_list_;                           // 头=最近使用，尾=最久未用
     size_t max_capacity_;                               // 缓存容量上限
+    int promote_threshold_;                             // 晋升阈值（访问多少次后进缓存）
 
     size_t hash_hit_ = 0;
     size_t bplus_fallback_ = 0;

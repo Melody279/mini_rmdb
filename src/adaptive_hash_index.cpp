@@ -43,7 +43,7 @@ Maybe<Rid> AdaptiveHashIndex::get(int key) {
     if (result.has_value()) {
         int& cnt = access_count_[key];
         ++cnt;
-        if (cnt >= PROMOTE_THRESHOLD) {
+        if (cnt >= promote_threshold_) {
             // TODO(4.3) 容量检查 + LRU 淘汰（算法关键，你来填）：
             //   晋升前检查缓存是否已满，满了先淘汰最久未用条目：
             //     if (hot_cache_.size() >= max_capacity_) evict_lru();
