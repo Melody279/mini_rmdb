@@ -1,0 +1,12 @@
+bayes_opt_online: continuous space + real load evaluation (hot 80/20)
+grid 110-point approx best hit = 0.9069
+  seed=0 final=0.9069 (cap~11930 thr~1) first>=99%best at round 11
+  seed=1 final=0.8910 (cap~7421 thr~1) first>=99%best at round 15
+  seed=2 final=0.7333 (cap~8033 thr~4) first>=99%best at round 15
+  seed=3 final=0.9069 (cap~16227 thr~1) first>=99%best at round 3
+  seed=4 final=0.9069 (cap~16093 thr~1) first>=99%best at round 5
+  seed=5 final=0.7731 (cap~5683 thr~3) first>=99%best at round 15
+
+bayes15 avg best = 0.8530 (of grid 0.9069, ratio 0.941)
+random15 avg best = 0.8438 (ratio 0.930)
+bayes avg first-hit round = 10.7 (15 evaluations total)
